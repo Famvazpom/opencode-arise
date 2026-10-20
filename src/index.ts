@@ -1,5 +1,4 @@
-import type { Plugin, PluginInput, Hooks } from "@opencode-ai/plugin";
-import type { Event } from "@opencode-ai/sdk";
+import { Agent, Model, Plugin } from "@opencode/plugin";
 import { AriseConfigSchema, DEFAULT_CONFIG, type AriseConfig, type HookName, type ShadowName } from "./config/schema";
 import { SHADOW_AGENTS, OPENCODE_OVERRIDES } from "./agents";
 import {
@@ -11,6 +10,7 @@ import {
 import {
   createCallAriseAgentTool,
   BackgroundManager,
+  recentAssistantText,
   createBackgroundTaskTool,
   createBackgroundOutputTool,
   createBackgroundStatusTool,
@@ -21,9 +21,9 @@ type JsonObject = Record<string, unknown>;
 
 const CONFIG_FILENAME = "opencode-arise.json";
 
-async function loadAriseConfig(ctx: PluginInput): Promise<AriseConfig> {
+async function loadAriseConfig(ctx: Plugin.Context): Promise<AriseConfig> {
   const paths = [
-    `${ctx.worktree}/.opencode/${CONFIG_FILENAME}`,
+    `${ctx.location.directory}/.opencode/${CONFIG_FILENAME}`,
     `${process.env.HOME}/.config/opencode/${CONFIG_FILENAME}`,
   ];
 
@@ -74,148 +74,163 @@ function isHookEnabled(config: AriseConfig, hookName: HookName): boolean {
   return !(config.disabled_hooks ?? []).includes(hookName);
 }
 
-const OpencodeArise: Plugin = async (ctx: PluginInput): Promise<Hooks> => {
-  const config = await loadAriseConfig(ctx);
+type AgentEditor = Parameters<Parameters<Plugin.Context["agent"]["transform"]>[0]>[0];
 
-  // Initialize background manager
-  const backgroundManager = new BackgroundManager(ctx);
+function applyShadowAgents(editor: AgentEditor, config: AriseConfig): void {
+  editor.default("monarch");
 
-  // Initialize hooks
-  const bannerHook = isHookEnabled(config, "arise-banner") && config.show_banner
-    ? createAriseBannerHook(ctx)
-    : null;
+  const disabledShadows = new Set(config.disabled_shadows ?? []);
+  for (const [shadowId, shadow] of Object.entries(SHADOW_AGENTS)) {
+    if (disabledShadows.has(shadowId as ShadowName)) continue;
 
-  const outputShaper = isHookEnabled(config, "output-shaper")
-    ? createOutputShaperHook(config)
-    : null;
+    const userOverride = config.agents?.[shadowId as ShadowName];
+    if (userOverride?.disabled) continue;
 
-  const compactionPreserver = isHookEnabled(config, "compaction-preserver")
-    ? createCompactionPreserverHook()
-    : null;
+    const model = Model.Ref.parse(userOverride?.model ?? shadow.model);
 
-  const todoEnforcer = isHookEnabled(config, "todo-enforcer")
-    ? createTodoEnforcerHook(ctx)
-    : null;
-
-  return {
-    // Register custom tools
-    tool: {
-      arise_summon: createCallAriseAgentTool(ctx),
-      arise_background: createBackgroundTaskTool(backgroundManager),
-      arise_background_output: createBackgroundOutputTool(backgroundManager),
-      arise_background_status: createBackgroundStatusTool(backgroundManager),
-      arise_background_cancel: createBackgroundCancelTool(backgroundManager),
-    },
-
-    async config(opencodeConfig) {
-      const cfg = opencodeConfig as JsonObject;
-
-      // Set monarch as default agent
-      cfg.default_agent = "monarch";
-
-      // Initialize agent config if needed
-      cfg.agent = (cfg.agent as JsonObject) ?? {};
-      const agents = cfg.agent as JsonObject;
-
-      // Add shadow soldiers
-      const disabledShadows = new Set(config.disabled_shadows ?? []);
-      for (const [name, shadow] of Object.entries(SHADOW_AGENTS)) {
-        const shadowName = name as ShadowName;
-        if (disabledShadows.has(shadowName)) continue;
-
-        const userOverride = config.agents?.[shadowName];
-        if (userOverride?.disabled) continue;
-
-        agents[name] = {
-          description: shadow.description,
-          mode: shadow.mode,
-          model: userOverride?.model ?? shadow.model,
-          steps: shadow.steps,
-          ...(shadow.prompt && { prompt: shadow.prompt }),
-          ...(shadow.permission && { permission: shadow.permission }),
-          ...(shadow.options && { options: shadow.options }),
-        };
+    editor.update(shadowId, (agent) => {
+      agent.name = Agent.Name.make(shadow.name);
+      agent.description = shadow.description;
+      agent.mode = shadow.mode;
+      agent.model = model;
+      agent.steps = shadow.steps;
+      if (shadow.system) agent.system = shadow.system;
+      if (shadow.request?.body) {
+        Object.assign(agent.request.body, shadow.request.body);
       }
-
-      // Apply OpenCode agent overrides (make build/plan invokable, hide explore/general)
-      for (const [name, override] of Object.entries(OPENCODE_OVERRIDES)) {
-        agents[name] = deepMerge((agents[name] as JsonObject) ?? {}, override as JsonObject);
+      for (const rule of shadow.permissions ?? []) {
+        agent.permissions.push(rule);
       }
-    },
+    });
+  }
 
-    async "tool.execute.after"(input, output) {
-      if (outputShaper) {
-        output.output = await outputShaper.shapeOutput(
-          input.tool,
-          output.output,
-          output.metadata as Record<string, unknown>
-        );
+  // V2 keeps built-in agents but lets plugins adjust them (mode/model/visibility).
+  for (const [agentId, override] of Object.entries(OPENCODE_OVERRIDES)) {
+    editor.update(agentId, (agent) => {
+      if (override.mode) agent.mode = override.mode;
+      if (override.hidden !== undefined) agent.hidden = override.hidden;
+      if (override.model) agent.model = Model.Ref.parse(override.model);
+    });
+  }
+}
+
+const OpencodeArise = Plugin.define({
+  id: "opencode-arise",
+  async setup(ctx) {
+    const config = await loadAriseConfig(ctx);
+    const backgroundManager = new BackgroundManager(ctx);
+
+    const bannerHook = isHookEnabled(config, "arise-banner") && config.show_banner
+      ? createAriseBannerHook()
+      : null;
+
+    const outputShaper = isHookEnabled(config, "output-shaper")
+      ? createOutputShaperHook(config)
+      : null;
+
+    const compactionPreserver = isHookEnabled(config, "compaction-preserver")
+      ? createCompactionPreserverHook()
+      : null;
+
+    const todoEnforcer = isHookEnabled(config, "todo-enforcer")
+      ? createTodoEnforcerHook()
+      : null;
+
+    // Agents: create the shadow army and adjust built-in agents.
+    await ctx.agent.transform((editor) => {
+      applyShadowAgents(editor, config);
+    });
+
+    // Tools: V2 registers definitions through a replayable transform.
+    await ctx.tool.transform((editor) => {
+      editor.add(createCallAriseAgentTool(ctx));
+      editor.add(createBackgroundTaskTool(backgroundManager));
+      editor.add(createBackgroundOutputTool(backgroundManager));
+      editor.add(createBackgroundStatusTool(backgroundManager));
+      editor.add(createBackgroundCancelTool(backgroundManager));
+    });
+
+    if (outputShaper) {
+      await ctx.tool.hook("execute.after", async (event) => {
+        if (event.status !== "completed") return;
+
+        const result = event.result;
+        const metadata = result.metadata as Record<string, unknown> | undefined;
+        if (typeof result.content === "string") {
+          event.result = {
+            ...result,
+            content: outputShaper.shapeOutput(event.tool, result.content, metadata),
+          };
+        } else if (Array.isArray(result.content)) {
+          event.result = {
+            ...result,
+            content: result.content.map((part) =>
+              part.type === "text"
+                ? { ...part, text: outputShaper.shapeOutput(event.tool, part.text, metadata) }
+                : part,
+            ),
+          };
+        }
+      });
+    }
+
+    if (compactionPreserver) {
+      await ctx.session.hook("compaction", (event) => {
+        event.system.push({
+          type: "text",
+          text: compactionPreserver.getPreservationContext(),
+        });
+      });
+    }
+
+    // Events: V2 exposes one subscription instead of a returned `event` hook.
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          await handleEvent(event as { type: string; data?: { sessionID?: string } });
+        }
+      } catch {
+        // Subscription aborted on plugin unload.
       }
-    },
+    })();
 
-    async "experimental.session.compacting"(_input, output) {
-      if (compactionPreserver) {
-        output.context.push(compactionPreserver.getPreservationContext());
-      }
-    },
+    async function handleEvent(event: { type: string; data?: { sessionID?: string } }): Promise<void> {
+      try {
+        if (event.type === "session.execution.started" && bannerHook) {
+          await bannerHook.onSessionCreated();
+          return;
+        }
 
-    async event(input: { event: Event }) {
-      const event = input.event;
+        if (
+          todoEnforcer &&
+          (event.type === "session.execution.succeeded" ||
+            event.type === "session.execution.failed" ||
+            event.type === "session.execution.interrupted")
+        ) {
+          const sessionID = event.data?.sessionID;
+          if (!sessionID) return;
 
-      // Let background manager handle events
-      backgroundManager.handleEvent(event);
+          const messages = await ctx.session.context({ sessionID });
+          const result = await todoEnforcer.checkCompletion(recentAssistantText(messages));
 
-      // Show banner toast on session creation
-      if (event.type === "session.created" && bannerHook) {
-        await bannerHook.onSessionCreated();
-      }
-
-      // Handle session.idle for todo enforcement
-      if (event.type === "session.idle" && todoEnforcer) {
-        const sessionId = (event as { properties?: { sessionID?: string } }).properties?.sessionID;
-        if (sessionId) {
-          try {
-            // Get recent messages to check for incomplete todos
-            const messages = await ctx.client.session.messages({
-              path: { id: sessionId },
-            });
-
-            if (messages.data) {
-              // Extract text content from message parts
-              const recentMessages = messages.data.slice(-5).map((m) => {
-                const textContent = m.parts
-                  ?.filter((p) => p.type === "text")
-                  .map((p) => (p as { type: "text"; text: string }).text ?? "")
-                  .join("\n") ?? "";
-                return { content: textContent };
-              });
-
-              const result = await todoEnforcer.checkCompletion(recentMessages);
-
-              if (result.hasIncompleteTodos && result.reminderMessage) {
-                await ctx.client.tui.showToast({
-                  body: {
-                    title: "Arise - Incomplete Tasks",
-                    message: "You have pending TODOs. Complete them before stopping.",
-                    variant: "warning",
-                    duration: 5000,
-                  },
-                });
-              }
-            }
-          } catch {
-            // Ignore errors in todo enforcement
+          if (result.hasIncompleteTodos && result.reminderMessage) {
+            // V2 server plugins have no TUI toast API; surface the reminder in the log.
+            console.warn(result.reminderMessage);
           }
         }
+      } catch {
+        // Ignore errors in event handling
       }
-    },
-  };
-};
+    }
+
+    return () => controller.abort();
+  },
+});
 
 export default OpencodeArise;
 
 // NOTE: Do NOT export non-type values from main index.ts!
 // OpenCode treats ALL exports as plugin instances and tries to call them.
-// Use "opencode-arise/agents" subpath if you need to import SHADOW_AGENTS.
 export type { AriseConfig } from "./config/schema";
 export type { ShadowAgent } from "./agents/shadows";

@@ -116,17 +116,30 @@ function addPluginToConfig(configPath: string): boolean {
     console.error(`✗ Failed to parse config file: ${configPath}`);
     console.error(`  Error: ${err instanceof Error ? err.message : err}`);
     console.error(`\n  Your config file may have invalid JSON syntax.`);
-    console.error(`  You can manually add "${PLUGIN_NAME}" to the "plugin" array.`);
+    console.error(`  You can manually add "${PLUGIN_NAME}" to the "plugins" array.`);
     return false;
   }
 
   try {
-    if (!config.plugin) {
-      config.plugin = [];
+    // V2 uses "plugins". Legacy V1 configs used "plugin"; if the package is only
+    // registered there, keep it and report success instead of duplicating it.
+    const legacyPlugins = config.plugin;
+    if (Array.isArray(legacyPlugins) && isPluginEntry(legacyPlugins, PLUGIN_NAME)) {
+      console.log(`✓ ${PLUGIN_NAME} already registered in OpenCode config (legacy "plugin")`);
+      return true;
     }
 
-    const plugins = config.plugin as string[];
-    if (plugins.includes(PLUGIN_NAME)) {
+    if (!config.plugins) {
+      config.plugins = [];
+    }
+
+    if (!Array.isArray(config.plugins)) {
+      console.error(`✗ Existing "plugins" value is not an array; leaving config untouched.`);
+      return false;
+    }
+
+    const plugins = config.plugins as unknown[];
+    if (isPluginEntry(plugins, PLUGIN_NAME)) {
       console.log(`✓ ${PLUGIN_NAME} already registered in OpenCode config`);
       return true;
     }
@@ -142,6 +155,17 @@ function addPluginToConfig(configPath: string): boolean {
     console.error(`✗ Failed to update config:`, err);
     return false;
   }
+}
+
+/** V2 `plugins` entries are either a package name or an object with a `package` field. */
+function isPluginEntry(plugins: unknown[], name: string): boolean {
+  return plugins.some((entry) => {
+    if (typeof entry === "string") return entry === name;
+    if (entry && typeof entry === "object" && "package" in entry) {
+      return (entry as { package?: unknown }).package === name;
+    }
+    return false;
+  });
 }
 
 function createDefaultAriseConfig(): void {
@@ -213,10 +237,14 @@ function doctor(): void {
   try {
     const content = readFileSync(configPath, "utf-8");
     const config = parseJsonc(content) as Record<string, unknown>;
-    const plugins = (config.plugin as string[]) ?? [];
+    const plugins = Array.isArray(config.plugins) ? (config.plugins as unknown[]) : [];
+    const legacyPlugins = Array.isArray(config.plugin) ? (config.plugin as unknown[]) : [];
 
-    if (plugins.includes(PLUGIN_NAME)) {
-      console.log(`✓ ${PLUGIN_NAME} is registered`);
+    if (isPluginEntry(plugins, PLUGIN_NAME)) {
+      console.log(`✓ ${PLUGIN_NAME} is registered (plugins)`);
+    } else if (isPluginEntry(legacyPlugins, PLUGIN_NAME)) {
+      console.log(`○ ${PLUGIN_NAME} is registered via legacy "plugin" entry`);
+      console.log(`  V2 uses "plugins". Run: bunx ${PLUGIN_NAME} install to migrate it.`);
     } else {
       console.log(`✗ ${PLUGIN_NAME} is NOT registered`);
       console.log(`  Run: bunx ${PLUGIN_NAME} install`);

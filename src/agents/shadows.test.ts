@@ -28,19 +28,26 @@ describe("Shadow Agents", () => {
     }
   });
 
-  test("beru and bellion have edit denied", () => {
-    expect(SHADOW_AGENTS.beru.permission?.edit).toBe("deny");
-    expect(SHADOW_AGENTS.bellion.permission?.edit).toBe("deny");
+  test("beru and bellion deny edits via V2 permission rules", () => {
+    for (const name of ["beru", "bellion"]) {
+      const rules = SHADOW_AGENTS[name].permissions ?? [];
+      expect(rules).toContainEqual({ action: "edit", resource: "*", effect: "deny" });
+    }
+  });
+
+  test("bellion requires approval for shell commands", () => {
+    const rules = SHADOW_AGENTS.bellion.permissions ?? [];
+    expect(rules).toContainEqual({ action: "shell", resource: "*", effect: "ask" });
   });
 
   test("shadow-sovereign has high reasoning effort", () => {
-    expect(SHADOW_AGENTS["shadow-sovereign"].options?.reasoningEffort).toBe("high");
+    expect(SHADOW_AGENTS["shadow-sovereign"].request?.body?.reasoningEffort).toBe("high");
   });
 
-  test("all shadows have prompts", () => {
-    for (const [name, agent] of Object.entries(SHADOW_AGENTS)) {
-      expect(agent.prompt).toBeDefined();
-      expect(agent.prompt?.length).toBeGreaterThan(50);
+  test("all shadows have system prompts", () => {
+    for (const [, agent] of Object.entries(SHADOW_AGENTS)) {
+      expect(agent.system).toBeDefined();
+      expect(agent.system?.length).toBeGreaterThan(50);
     }
   });
 });

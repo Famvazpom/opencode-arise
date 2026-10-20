@@ -5,29 +5,28 @@ import { DEFAULT_CONFIG } from "../config/schema";
 describe("OutputShaperHook", () => {
   const shaper = createOutputShaperHook(DEFAULT_CONFIG);
 
-  test("does not truncate short output", async () => {
+  test("does not truncate short output", () => {
     const output = "Hello, world!";
-    const result = await shaper.shapeOutput("test", output);
+    const result = shaper.shapeOutput("test", output);
     expect(result).toBe(output);
   });
 
-  test("truncates long output", async () => {
+  test("truncates long output", () => {
     const longOutput = "x".repeat(20000);
-    const result = await shaper.shapeOutput("grep", longOutput);
+    const result = shaper.shapeOutput("grep", longOutput);
     expect(result.length).toBeLessThan(longOutput.length);
     expect(result).toContain("[opencode-arise] Output truncated");
   });
 
-  test("preserves error output with non-zero exit code", async () => {
+  test("preserves error output with non-zero exit code", () => {
     const errorOutput = "x".repeat(20000);
-    const result = await shaper.shapeOutput("bash", errorOutput, { exitCode: 1 });
+    const result = shaper.shapeOutput("bash", errorOutput, { exitCode: 1 });
     expect(result).toBe(errorOutput);
   });
 
-  test("preserves output with error patterns", async () => {
+  test("preserves output with error patterns", () => {
     const errorOutput = "Error: something went wrong\n" + "x".repeat(15000);
-    const result = await shaper.shapeOutput("bash", errorOutput, { exitCode: 0 });
-    // Should still preserve because it contains error pattern and is < 2x max
+    const result = shaper.shapeOutput("bash", errorOutput, { exitCode: 0 });
     expect(result).toBe(errorOutput);
   });
 });

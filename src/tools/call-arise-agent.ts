@@ -1,11 +1,19 @@
-import { tool } from "@opencode-ai/plugin";
-import type { PluginInput } from "@opencode-ai/plugin";
 import type { ShadowName } from "../config/schema";
+import { extractLastAssistantText } from "./session-output";
+import type { AriseContext, AriseToolInfo, ToolContext } from "./types";
 
 const ALLOWED_SHADOWS: ShadowName[] = ["beru", "igris", "bellion", "tusk", "tank", "shadow-sovereign"];
 
-export function createCallAriseAgentTool(ctx: PluginInput): ReturnType<typeof tool> {
-  return tool({
+interface SummonInput {
+  shadow: ShadowName;
+  prompt: string;
+  run_in_background: boolean;
+  description?: string;
+}
+
+export function createCallAriseAgentTool(ctx: AriseContext): AriseToolInfo {
+  return {
+    name: "arise_summon",
     description: `Invoke a shadow soldier to perform a specific task.
 
 Available shadows:
@@ -19,89 +27,69 @@ Available shadows:
 Use run_in_background=true for parallel execution (recommended for exploration/research).
 Use run_in_background=false when you need the result immediately.`,
 
-    args: {
-      shadow: tool.schema
-        .enum(ALLOWED_SHADOWS)
-        .describe("Which shadow to summon"),
-      prompt: tool.schema
-        .string()
-        .describe("The task/question for the shadow (be specific)"),
-      run_in_background: tool.schema
-        .boolean()
-        .describe("true = async (parallel), false = sync (wait for result)"),
-      description: tool.schema
-        .string()
-        .optional()
-        .describe("Short description of the task (for tracking)"),
+    input: {
+      type: "object",
+      properties: {
+        shadow: {
+          type: "string",
+          enum: ALLOWED_SHADOWS,
+          description: "Which shadow to summon",
+        },
+        prompt: {
+          type: "string",
+          description: "The task/question for the shadow (be specific)",
+        },
+        run_in_background: {
+          type: "boolean",
+          description: "true = async (parallel), false = sync (wait for result)",
+        },
+        description: {
+          type: "string",
+          description: "Short description of the task (for tracking)",
+        },
+      },
+      required: ["shadow", "prompt", "run_in_background"],
+      additionalProperties: false,
     },
 
-    async execute(args) {
-      const { shadow, prompt, run_in_background, description } = args;
+    async execute(rawInput, _context: ToolContext) {
+      const { shadow, prompt, run_in_background, description } = rawInput as SummonInput;
       const taskDesc = description ?? `${shadow} task`;
 
       try {
-        // Create session
-        const session = await ctx.client.session.create({
-          body: { title: `[arise] ${taskDesc}` },
+        const session = await ctx.session.create({
+          title: `[arise] ${taskDesc}`,
+          agent: shadow,
         });
-
-        const sessionId = session.data?.id;
-        if (!sessionId) {
-          return `[arise] Failed to create session for ${shadow}`;
-        }
+        const sessionID = session.id;
 
         if (run_in_background) {
-          // Fire and forget - prompt async
-          ctx.client.session.promptAsync({
-            path: { id: sessionId },
-            body: {
-              agent: shadow,
-              parts: [{ type: "text", text: prompt }],
-            },
-          }).catch(() => {});
+          void ctx.session.prompt({ sessionID, text: prompt }).catch(() => {});
 
-          return `[arise] Summoned ${shadow} in background.
+          return {
+            content: `[arise] Summoned ${shadow} in background.
 Task: ${taskDesc}
-Session ID: ${sessionId}
+Session ID: ${sessionID}
 
-The shadow is working. Continue with your work.`;
-        } else {
-          // Sync: prompt and wait
-          await ctx.client.session.prompt({
-            path: { id: sessionId },
-            body: {
-              agent: shadow,
-              parts: [{ type: "text", text: prompt }],
-            },
-          });
-
-          // Get messages
-          const messages = await ctx.client.session.messages({
-            path: { id: sessionId },
-          });
-
-          // Find last assistant message
-          const lastAssistant = messages.data
-            ?.filter((m) => m.info.role === "assistant")
-            .pop();
-
-          if (lastAssistant) {
-            const textParts = lastAssistant.parts
-              ?.filter((p) => p.type === "text")
-              .map((p) => (p as { type: "text"; text: string }).text ?? "")
-              .join("\n");
-
-            return `[arise] ${shadow} reports:
-
-${textParts || "(No text response)"}`;
-          }
-
-          return `[arise] ${shadow} completed but returned no message.`;
+The shadow is working. Continue with your work.`,
+          };
         }
+
+        await ctx.session.prompt({ sessionID, text: prompt });
+        await ctx.session.wait({ sessionID });
+
+        const messages = await ctx.session.context({ sessionID });
+        const text = extractLastAssistantText(messages);
+
+        return {
+          content: `[arise] ${shadow} reports:
+
+${text || "(No text response)"}`,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `[arise] Failed to summon ${shadow}: ${message}`;
+        return { content: `[arise] Failed to summon ${shadow}: ${message}` };
       }
     },
-  });
+  };
 }

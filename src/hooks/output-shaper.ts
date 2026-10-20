@@ -11,11 +11,11 @@ export function createOutputShaperHook(config: AriseConfig) {
   const tailChars = Math.floor(maxChars * TAIL_RATIO);
 
   return {
-    async shapeOutput(
+    shapeOutput(
       toolName: string,
       output: string,
       metadata?: Record<string, unknown>
-    ): Promise<string> {
+    ): string {
       if (typeof output !== "string") return output;
       if (output.length <= maxChars) return output;
 

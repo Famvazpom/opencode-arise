@@ -1,11 +1,12 @@
-import { tool, type ToolContext } from "@opencode-ai/plugin";
 import type { BackgroundManager } from "./background-manager";
 import type { ShadowName } from "../config/schema";
+import type { AriseToolInfo, ToolContext } from "./types";
 
 const BACKGROUND_SHADOWS: ShadowName[] = ["beru", "tank", "bellion"];
 
-export function createBackgroundTaskTool(manager: BackgroundManager): ReturnType<typeof tool> {
-  return tool({
+export function createBackgroundTaskTool(manager: BackgroundManager): AriseToolInfo {
+  return {
+    name: "arise_background",
     description: `Launch a shadow soldier as a background task for parallel execution.
 
 Best for:
@@ -15,20 +16,33 @@ Best for:
 
 Returns a task_id immediately. Use arise_background_output to get results later.`,
 
-    args: {
-      shadow: tool.schema
-        .enum(BACKGROUND_SHADOWS)
-        .describe("Which shadow to run in background"),
-      prompt: tool.schema
-        .string()
-        .describe("The task for the shadow"),
-      description: tool.schema
-        .string()
-        .describe("Short description (3-5 words)"),
+    input: {
+      type: "object",
+      properties: {
+        shadow: {
+          type: "string",
+          enum: BACKGROUND_SHADOWS,
+          description: "Which shadow to run in background",
+        },
+        prompt: {
+          type: "string",
+          description: "The task for the shadow",
+        },
+        description: {
+          type: "string",
+          description: "Short description (3-5 words)",
+        },
+      },
+      required: ["shadow", "prompt", "description"],
+      additionalProperties: false,
     },
 
-    async execute(args, context: ToolContext) {
-      const { shadow, prompt, description } = args;
+    async execute(rawInput, context: ToolContext) {
+      const { shadow, prompt, description } = rawInput as {
+        shadow: string;
+        prompt: string;
+        description: string;
+      };
 
       try {
         const task = await manager.launch({
@@ -38,35 +52,45 @@ Returns a task_id immediately. Use arise_background_output to get results later.
           parentSessionId: context.sessionID,
         });
 
-        return `[arise] Shadow ${shadow} launched in background.
+        return {
+          content: `[arise] Shadow ${shadow} launched in background.
 
 Task ID: ${task.id}
 Description: ${description}
 
-Use arise_background_output("${task.id}") when you need the result.`;
+Use arise_background_output("${task.id}") when you need the result.`,
+        };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        return `[arise] Failed to launch background task: ${msg}`;
+        return { content: `[arise] Failed to launch background task: ${msg}` };
       }
     },
-  });
+  };
 }
 
-export function createBackgroundOutputTool(manager: BackgroundManager): ReturnType<typeof tool> {
-  return tool({
+export function createBackgroundOutputTool(manager: BackgroundManager): AriseToolInfo {
+  return {
+    name: "arise_background_output",
     description: `Get the output from a background shadow task.`,
 
-    args: {
-      task_id: tool.schema
-        .string()
-        .describe("The task ID from arise_background"),
+    input: {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description: "The task ID from arise_background",
+        },
+      },
+      required: ["task_id"],
+      additionalProperties: false,
     },
 
-    async execute(args) {
-      const task = manager.getTask(args.task_id);
+    async execute(rawInput) {
+      const { task_id } = rawInput as { task_id: string };
+      const task = manager.getTask(task_id);
 
       if (!task) {
-        return `[arise] Task not found: ${args.task_id}`;
+        return { content: `[arise] Task not found: ${task_id}` };
       }
 
       const duration = task.completedAt
@@ -74,40 +98,48 @@ export function createBackgroundOutputTool(manager: BackgroundManager): ReturnTy
         : Math.round((Date.now() - task.startedAt) / 1000);
 
       if (task.status === "running") {
-        return `[arise] Task still running (${duration}s). Check again later.`;
+        return { content: `[arise] Task still running (${duration}s). Check again later.` };
       }
 
       if (task.status === "error") {
-        return `[arise] Task failed: ${task.error ?? "Unknown error"}`;
+        return { content: `[arise] Task failed: ${task.error ?? "Unknown error"}` };
       }
 
-      return `[arise] ${task.shadow} completed (${duration}s):
+      return {
+        content: `[arise] ${task.shadow} completed (${duration}s):
 
-${task.result ?? "(No output)"}`;
+${task.result ?? "(No output)"}`,
+      };
     },
-  });
+  };
 }
 
-export function createBackgroundStatusTool(manager: BackgroundManager): ReturnType<typeof tool> {
-  return tool({
+export function createBackgroundStatusTool(manager: BackgroundManager): AriseToolInfo {
+  return {
+    name: "arise_background_status",
     description: "List all background tasks and their status.",
 
-    args: {
-      current_session_only: tool.schema
-        .boolean()
-        .optional()
-        .describe("Only show tasks from current session"),
+    input: {
+      type: "object",
+      properties: {
+        current_session_only: {
+          type: "boolean",
+          description: "Only show tasks from current session",
+        },
+      },
+      additionalProperties: false,
     },
 
-    async execute(args, context: ToolContext) {
+    async execute(rawInput, context: ToolContext) {
+      const { current_session_only } = rawInput as { current_session_only?: boolean };
       let tasks = manager.getAllTasks();
 
-      if (args.current_session_only) {
+      if (current_session_only) {
         tasks = tasks.filter((t) => t.parentSessionId === context.sessionID);
       }
 
       if (tasks.length === 0) {
-        return "[arise] No background tasks.";
+        return { content: "[arise] No background tasks." };
       }
 
       const lines = tasks.map((t) => {
@@ -118,29 +150,36 @@ export function createBackgroundStatusTool(manager: BackgroundManager): ReturnTy
         return `- ${t.id}: ${t.shadow} | ${t.status} | ${t.description} (${duration}s)`;
       });
 
-      return `[arise] Background tasks:\n${lines.join("\n")}`;
+      return { content: `[arise] Background tasks:\n${lines.join("\n")}` };
     },
-  });
+  };
 }
 
-export function createBackgroundCancelTool(manager: BackgroundManager): ReturnType<typeof tool> {
-  return tool({
+export function createBackgroundCancelTool(manager: BackgroundManager): AriseToolInfo {
+  return {
+    name: "arise_background_cancel",
     description: "Cancel a running background task.",
 
-    args: {
-      task_id: tool.schema
-        .string()
-        .describe("The task ID to cancel"),
+    input: {
+      type: "object",
+      properties: {
+        task_id: {
+          type: "string",
+          description: "The task ID to cancel",
+        },
+      },
+      required: ["task_id"],
+      additionalProperties: false,
     },
 
-    async execute(args) {
-      const success = await manager.cancelTask(args.task_id);
+    async execute(rawInput) {
+      const { task_id } = rawInput as { task_id: string };
+      const success = await manager.cancelTask(task_id);
 
       if (success) {
-        return `[arise] Task ${args.task_id} cancelled.`;
-      } else {
-        return `[arise] Could not cancel task (not found or already completed).`;
+        return { content: `[arise] Task ${task_id} cancelled.` };
       }
+      return { content: `[arise] Could not cancel task (not found or already completed).` };
     },
-  });
+  };
 }

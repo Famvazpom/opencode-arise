@@ -1,5 +1,3 @@
-import type { PluginInput } from "@opencode-ai/plugin";
-
 const TODO_PATTERNS = [
   /\[pending\]/i,
   /\[in_progress\]/i,
@@ -14,7 +12,7 @@ const COMPLETION_PATTERNS = [
   /- \[x\]/i,
 ];
 
-export function createTodoEnforcerHook(_ctx: PluginInput) {
+export function createTodoEnforcerHook() {
   return {
     async checkCompletion(messages: Array<{ content: string }>): Promise<{
       hasIncompleteTodos: boolean;

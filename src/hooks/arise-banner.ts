@@ -1,5 +1,3 @@
-import type { PluginInput } from "@opencode-ai/plugin";
-
 const BANNER_ASCII = `
 ╔═══════════════════════════════════════════════════════╗
 ║                                                       ║
@@ -14,32 +12,18 @@ const BANNER_ASCII = `
 ╚═══════════════════════════════════════════════════════╝
 `;
 
-const TOAST_MESSAGE = "⚔️ ARISE! Shadow Army Assembled. Monarch ready.";
+export const BANNER_TOAST_MESSAGE = "⚔️ ARISE! Shadow Army Assembled. Monarch ready.";
 
 let bannerShownThisProcess = false;
 
-export function createAriseBannerHook(ctx: PluginInput) {
-  const showToast = async () => {
-    try {
-      await ctx.client.tui.showToast({
-        body: {
-          title: "opencode-arise",
-          message: TOAST_MESSAGE,
-          variant: "info",
-          duration: 4000,
-        },
-      });
-    } catch {
-      // TUI might not be available (non-interactive mode)
-    }
-  };
-
+/**
+ * V2 server plugins cannot render TUI toasts directly. The banner is printed to
+ * the server log, while the optional TUI plugin (src/tui.ts) shows the toast.
+ */
+export function createAriseBannerHook() {
   return {
     async onSessionCreated() {
-      if (!bannerShownThisProcess) {
-        bannerShownThisProcess = true;
-        await showToast();
-      }
+      printBannerToConsole();
     },
   };
 }

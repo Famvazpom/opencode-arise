@@ -1,12 +1,26 @@
+export interface PermissionRule {
+  action: string;
+  resource: string;
+  effect: "allow" | "deny" | "ask";
+}
+
 export interface ShadowAgent {
   name: string;
   description: string;
   mode: "primary" | "subagent" | "all";
   model: string;
   steps: number;
-  prompt?: string;
-  permission?: Record<string, "allow" | "deny" | "ask">;
-  options?: Record<string, unknown>;
+  system?: string;
+  permissions?: PermissionRule[];
+  request?: {
+    body?: Record<string, unknown>;
+  };
+}
+
+export interface AgentOverride {
+  mode?: "primary" | "subagent" | "all";
+  model?: string;
+  hidden?: boolean;
 }
 
 export const SHADOW_AGENTS: Record<string, ShadowAgent> = {
@@ -16,7 +30,7 @@ export const SHADOW_AGENTS: Record<string, ShadowAgent> = {
     mode: "primary",
     model: "anthropic/claude-opus-4-5",
     steps: 16,
-    prompt: `You are the Shadow Monarch (opencode-arise).
+    system: `You are the Shadow Monarch (opencode-arise).
 
 Your role: Interpret user requests and delegate to your shadow army with MINIMAL SUFFICIENT effort.
 
@@ -52,11 +66,8 @@ ARISE and lead your shadows to victory.`,
     mode: "subagent",
     model: "anthropic/claude-haiku-4-5",
     steps: 12,
-    permission: {
-      edit: "deny",
-      write: "deny",
-    },
-    prompt: `You are Beru, the Ant King shadow - fastest scout in the shadow army.
+    permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+    system: `You are Beru, the Ant King shadow - fastest scout in the shadow army.
 
 Your role: Rapidly explore the codebase. Find files, patterns, and answer questions about code structure.
 
@@ -72,7 +83,7 @@ Be thorough but fast. Search multiple patterns if needed. Return clear, actionab
     mode: "subagent",
     model: "zai-coding-plan/glm-4.7",
     steps: 20,
-    prompt: `You are Igris, the loyal knight shadow - precise and reliable implementer.
+    system: `You are Igris, the loyal knight shadow - precise and reliable implementer.
 
 Your role: Execute code changes with precision. Edit files, run commands, verify results.
 
@@ -91,12 +102,11 @@ Execute with honor.`,
     mode: "subagent",
     model: "openai/gpt-5.2",
     steps: 12,
-    permission: {
-      edit: "deny",
-      write: "deny",
-      bash: "ask",
-    },
-    prompt: `You are Bellion, Grand Marshal of the shadow army - master strategist.
+    permissions: [
+      { action: "edit", resource: "*", effect: "deny" },
+      { action: "shell", resource: "*", effect: "ask" },
+    ],
+    system: `You are Bellion, Grand Marshal of the shadow army - master strategist.
 
 Your role: Analyze complex problems and create detailed plans. You do NOT implement - you plan.
 
@@ -116,7 +126,7 @@ Think deeply, plan carefully.`,
     mode: "subagent",
     model: "google/gemini-3-pro-preview",
     steps: 18,
-    prompt: `You are Tusk, the creative shadow - UI/UX and frontend specialist.
+    system: `You are Tusk, the creative shadow - UI/UX and frontend specialist.
 
 Your role: Handle all visual and frontend work. Components, styling, layouts, animations.
 
@@ -135,11 +145,8 @@ Create with artistry.`,
     mode: "subagent",
     model: "zai-coding-plan/glm-4.7",
     steps: 18,
-    permission: {
-      edit: "deny",
-      write: "deny",
-    },
-    prompt: `You are Tank, the research shadow - gatherer of external knowledge.
+    permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+    system: `You are Tank, the research shadow - gatherer of external knowledge.
 
 Your role: Find information from outside the codebase. Documentation, examples, best practices.
 
@@ -160,14 +167,13 @@ Research thoroughly, report concisely.`,
     mode: "subagent",
     model: "openai/gpt-5.2",
     steps: 24,
-    options: {
-      reasoningEffort: "high",
+    request: {
+      body: {
+        reasoningEffort: "high",
+      },
     },
-    permission: {
-      edit: "deny",
-      write: "deny",
-    },
-    prompt: `You are the Shadow Sovereign - the Monarch's full power manifestation.
+    permissions: [{ action: "edit", resource: "*", effect: "deny" }],
+    system: `You are the Shadow Sovereign - the Monarch's full power manifestation.
 
 You are summoned only for:
 1. Complex architectural decisions
@@ -180,17 +186,16 @@ Your wisdom guides the shadow army through the most challenging battles.`,
   },
 };
 
-export const OPENCODE_OVERRIDES = {
+export const OPENCODE_OVERRIDES: Record<string, AgentOverride> = {
   build: {
-    mode: "all" as const,
+    mode: "all",
     model: "zai-coding-plan/glm-4.7",
   },
   plan: {
-    mode: "all" as const,
+    mode: "all",
     model: "anthropic/claude-opus-4-5",
   },
   explore: {
-    description: "OpenCode explore (use @beru for arise)",
     hidden: true,
   },
   general: {

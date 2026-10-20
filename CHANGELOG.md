@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-20
+
+### Changed
+
+- **Migrated to the OpenCode V2 plugin API** (`@opencode/plugin@^2.1.1`, requires OpenCode v2.1+).
+  V1 plugins do not run in V2, so this is a breaking release for V1 users.
+- Plugin entrypoint is now `Plugin.define({ id: "opencode-arise", setup(ctx) })`.
+- Agents are registered through `ctx.agent.transform`, tools through `ctx.tool.transform`.
+- Hooks now use the V2 domain hooks:
+  - `tool.execute.after` → `ctx.tool.hook("execute.after", ...)`
+  - `experimental.session.compacting` → `ctx.session.hook("compaction", ...)`
+  - the returned `event` hook → `ctx.event.subscribe()`
+- Background tasks now use `ctx.session.wait` / `ctx.session.context` instead of
+  `session.status` polling and `promptAsync`.
+- Shadow permissions use V2 rules (`{ action, resource, effect }`) instead of the
+  V1 `permission` map; `options.reasoningEffort` moved to `request.body`.
+- CLI installer now writes the V2 `plugins` array (still supports/updates legacy
+  `plugin` configs).
+- `bun run build` now emits `dist/tui.js` and keeps `@opencode/plugin`/`zod` external.
+
+### Added
+
+- Optional TUI plugin entrypoint (`opencode-arise/tui`) that restores the
+  "ARISE!" toast, since V2 server plugins have no TUI notification API.
+
+### Fixed
+
+- Shadow agents are now created via `editor.update`, which creates missing agents
+  in V2 (`Agent.Info.default`).
+
 ## [0.1.5] - 2025-01-12
 
 ### Fixed

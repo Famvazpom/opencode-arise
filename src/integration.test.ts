@@ -1,170 +1,164 @@
 import { describe, expect, it } from "bun:test";
 import OpencodeArise from "./index";
+import { createMockContext } from "./testing/mock-context";
 
-// Comprehensive mock context
-const createMockCtx = () => ({
-  client: {
-    session: {
-      create: async () => ({ data: { id: "test-session-123" } }),
-      prompt: async () => ({}),
-      promptAsync: async () => ({}),
-      messages: async () => ({ data: [] }),
-      status: async () => ({ data: {} }),
-      abort: async () => ({}),
-    },
-    tui: {
-      showToast: async () => true,
-    },
-  },
-  project: { 
-    id: "test-project",
-    worktree: "/tmp/test-project",
-    name: "Test Project",
-  },
-  directory: "/tmp/test-project",
-  worktree: "/tmp/test-project",
-  serverUrl: new URL("http://localhost:4096"),
-  $: (async () => ({ stdout: "", stderr: "", exitCode: 0 })) as any,
-});
+const TOOL_NAMES = [
+  "arise_summon",
+  "arise_background",
+  "arise_background_output",
+  "arise_background_status",
+  "arise_background_cancel",
+];
 
-describe("Plugin Integration", () => {
-  it("plugin is an async function", () => {
-    expect(typeof OpencodeArise).toBe("function");
-  });
+async function setup() {
+  const mock = createMockContext();
+  const cleanup = await OpencodeArise.setup(mock.ctx);
+  return { ...mock, cleanup };
+}
 
-  it("plugin returns hooks object", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    expect(hooks).toBeDefined();
-    expect(typeof hooks).toBe("object");
-  });
-
-  it("hooks object has all required properties", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    // Custom tools
-    expect(hooks.tool).toBeDefined();
-    expect(typeof hooks.tool).toBe("object");
-    
-    // Required hooks
-    expect(hooks.config).toBeDefined();
-    expect(typeof hooks.config).toBe("function");
-    
-    expect(hooks["tool.execute.after"]).toBeDefined();
-    expect(typeof hooks["tool.execute.after"]).toBe("function");
-    
-    expect(hooks["experimental.session.compacting"]).toBeDefined();
-    expect(typeof hooks["experimental.session.compacting"]).toBe("function");
-    
-    expect(hooks.event).toBeDefined();
-    expect(typeof hooks.event).toBe("function");
+describe("Plugin setup (V2)", () => {
+  it("returns a cleanup function", async () => {
+    const mock = createMockContext();
+    const cleanup = await OpencodeArise.setup(mock.ctx);
+    expect(typeof cleanup).toBe("function");
   });
 
   it("registers all 5 custom tools", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    const toolNames = Object.keys(hooks.tool!);
-    
-    expect(toolNames).toContain("arise_summon");
-    expect(toolNames).toContain("arise_background");
-    expect(toolNames).toContain("arise_background_output");
-    expect(toolNames).toContain("arise_background_status");
-    expect(toolNames).toContain("arise_background_cancel");
-    expect(toolNames.length).toBe(5);
+    const mock = await setup();
+    expect(Array.from(mock.tools.keys()).sort()).toEqual([...TOOL_NAMES].sort());
   });
 
-  it("config hook sets default_agent to monarch", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    const mockConfig: Record<string, unknown> = {};
-    await hooks.config!(mockConfig);
-    
-    expect(mockConfig.default_agent).toBe("monarch");
+  it("sets the default agent to monarch", async () => {
+    const mock = await setup();
+    expect(mock.defaultAgent.value).toBe("monarch");
   });
 
-  it("config hook creates all shadow agents", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    const mockConfig: Record<string, unknown> = {};
-    await hooks.config!(mockConfig);
-    
-    const agents = mockConfig.agent as Record<string, unknown>;
-    
-    // All shadows should be registered
-    expect(agents.monarch).toBeDefined();
-    expect(agents.beru).toBeDefined();
-    expect(agents.igris).toBeDefined();
-    expect(agents.bellion).toBeDefined();
-    expect(agents.tusk).toBeDefined();
-    expect(agents.tank).toBeDefined();
-    expect(agents["shadow-sovereign"]).toBeDefined();
+  it("creates all shadow agents", async () => {
+    const mock = await setup();
+    for (const name of [
+      "monarch",
+      "beru",
+      "igris",
+      "bellion",
+      "tusk",
+      "tank",
+      "shadow-sovereign",
+    ]) {
+      expect(mock.agents.get(name)).toBeDefined();
+    }
   });
 
-  it("config hook sets correct modes for agents", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    const mockConfig: Record<string, unknown> = {};
-    await hooks.config!(mockConfig);
-    
-    const agents = mockConfig.agent as Record<string, any>;
-    
-    // Monarch is primary
-    expect(agents.monarch.mode).toBe("primary");
-    
-    // Others are subagents
-    expect(agents.beru.mode).toBe("subagent");
-    expect(agents.igris.mode).toBe("subagent");
-    expect(agents.bellion.mode).toBe("subagent");
+  it("sets correct modes for agents", async () => {
+    const mock = await setup();
+    expect(mock.agents.get("monarch").mode).toBe("primary");
+    expect(mock.agents.get("beru").mode).toBe("subagent");
+    expect(mock.agents.get("bellion").mode).toBe("subagent");
   });
 
-  it("compaction hook injects context", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    const mockOutput = { context: [] as string[], prompt: undefined };
-    await hooks["experimental.session.compacting"]!({ sessionID: "test" }, mockOutput);
-    
-    expect(mockOutput.context.length).toBeGreaterThan(0);
-    expect(mockOutput.context[0]).toContain("PRESERVE");
+  it("applies edit denial permissions to read-only shadows", async () => {
+    const mock = await setup();
+
+    const beruRules = mock.agents.get("beru").permissions as Array<{ action: string; effect: string }>;
+    expect(beruRules).toContainEqual({ action: "edit", resource: "*", effect: "deny" });
+
+    const bellionRules = mock.agents.get("bellion").permissions as Array<{ action: string; effect: string }>;
+    expect(bellionRules).toContainEqual({ action: "edit", resource: "*", effect: "deny" });
+    expect(bellionRules).toContainEqual({ action: "shell", resource: "*", effect: "ask" });
   });
 
-  it("tool.execute.after hook can shape output", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    // Short output should pass through unchanged
-    const shortOutput = { title: "test", output: "short output", metadata: {} };
-    await hooks["tool.execute.after"]!(
-      { tool: "bash", sessionID: "test", callID: "test" },
-      shortOutput
+  it("applies built-in agent overrides", async () => {
+    const mock = await setup();
+    expect(mock.agents.get("build").mode).toBe("all");
+    expect(mock.agents.get("plan").mode).toBe("all");
+    expect(mock.agents.get("explore").hidden).toBe(true);
+    expect(mock.agents.get("general").hidden).toBe(true);
+  });
+
+  it("honors disabled_shadows config", async () => {
+    const { writeFileSync, mkdirSync, rmSync } = await import("fs");
+    const dir = "/tmp/opencode/arise-test-disabled";
+    mkdirSync(`${dir}/.opencode`, { recursive: true });
+    writeFileSync(
+      `${dir}/.opencode/opencode-arise.json`,
+      JSON.stringify({ disabled_shadows: ["tank"] }),
     );
-    
-    expect(shortOutput.output).toBe("short output");
+
+    try {
+      const mock = createMockContext({ directory: dir });
+      await OpencodeArise.setup(mock.ctx);
+      expect(mock.agents.get("tank")).toBeUndefined();
+      expect(mock.agents.get("beru")).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("registers the compaction hook and injects context", async () => {
+    const mock = await setup();
+    expect(mock.sessionHooks.length).toBeGreaterThan(0);
+
+    const event = { sessionID: "test", system: [] as Array<{ type: string; text: string }>, messages: [] };
+    await mock.sessionHooks[0](event);
+
+    expect(event.system.length).toBeGreaterThan(0);
+    expect(event.system[0].text).toContain("PRESERVE");
+  });
+
+  it("shapes long tool output through the execute.after hook", async () => {
+    const mock = await setup();
+    expect(mock.toolHooks.length).toBeGreaterThan(0);
+
+    const longOutput = "x".repeat(20000);
+    const event = {
+      tool: "bash",
+      sessionID: "test",
+      callID: "test",
+      status: "completed" as const,
+      result: { content: longOutput, metadata: {} },
+    };
+    await mock.toolHooks[0](event);
+
+    expect(typeof event.result.content).toBe("string");
+    expect((event.result.content as string).length).toBeLessThan(longOutput.length);
+  });
+
+  it("does not shape output for failed tool calls", async () => {
+    const mock = await setup();
+    const longOutput = "x".repeat(20000);
+    const event = {
+      tool: "bash",
+      sessionID: "test",
+      callID: "test",
+      status: "error" as const,
+      result: { content: longOutput, metadata: {} },
+    };
+    await mock.toolHooks[0](event);
+
+    expect(event.result.content).toBe(longOutput);
   });
 });
 
-describe("Error Handling", () => {
-  it("plugin handles missing config gracefully", async () => {
-    const ctx = createMockCtx();
-    // Plugin should work even without opencode-arise.json
-    const hooks = await OpencodeArise(ctx as any);
-    
-    expect(hooks).toBeDefined();
+describe("Event handling", () => {
+  it("handles session lifecycle events without throwing", async () => {
+    const mock = await setup();
+
+    await expect(
+      mock.emit({ type: "session.execution.started", data: { sessionID: "s1" } }),
+    ).resolves.toBeUndefined();
+    await expect(
+      mock.emit({ type: "session.execution.succeeded", data: { sessionID: "s1" } }),
+    ).resolves.toBeUndefined();
+    await expect(mock.emit({ type: "unknown.event" })).resolves.toBeUndefined();
   });
 
-  it("event hook handles unknown events gracefully", async () => {
-    const ctx = createMockCtx();
-    const hooks = await OpencodeArise(ctx as any);
-    
-    // Should not throw for unknown event types
+  it("checks the transcript on execution completion", async () => {
+    const mock = await setup();
+    mock.setNextMessages([
+      { type: "assistant", content: [{ type: "text", text: "1. [pending] unfinished task" }] },
+    ]);
+
     await expect(
-      hooks.event!({ event: { type: "unknown.event" as any, properties: {} } })
+      mock.emit({ type: "session.execution.succeeded", data: { sessionID: "s1" } }),
     ).resolves.toBeUndefined();
   });
 });
